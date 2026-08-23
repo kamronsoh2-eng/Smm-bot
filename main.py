@@ -1,10 +1,15 @@
-import asyncio, aiohttp
+import asyncio, aiohttp, os
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN"
-API_KEY = "YOUR_TOPSMM_API_KEY"
+# Tokenlarni tizim o'zgaruvchilaridan xavfsiz o'qish
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+API_KEY = os.environ.get("TOPSMM_API_KEY")
 API_URL = "https://topsmm.uz"
+
+if not BOT_TOKEN or not API_KEY:
+    raise ValueError("ERROR: BOT_TOKEN yoki TOPSMM_API_KEY Render paneli (Environment) ichiga kiritilmagan!")
+
 bot = AsyncTeleBot(BOT_TOKEN)
 user_sessions, services_cache = {}, []
 
@@ -24,8 +29,8 @@ async def call_api(payload):
 
 @bot.message_handler(commands=['start'])
 async def start(m):
-    await bot.reply_to(m, "👋 *TopSMM Botiga Xush Kelibsiz!*\nKategoriyani ko'rish uchun tugmani bosing:", parse_mode="Markdown", reply_markup=main_menu())
     global services_cache
+    await bot.reply_to(m, "👋 *TopSMM Botiga Xush Kelibsiz!*\nKategoriyani ko'rish uchun tugmani bosing:", parse_mode="Markdown", reply_markup=main_menu())
     res = await call_api({'action': 'services'})
     if res: services_cache = res
 
@@ -42,9 +47,10 @@ async def status_start(m):
 
 @bot.message_handler(func=lambda m: m.text == "🚀 Yangi Buyurtma")
 async def order_start(m):
+    global services_cache
     if not services_cache:
         res = await call_api({'action': 'services'})
-        if res: global services_cache; services_cache = res
+        if res: services_cache = res
     if not services_cache:
         await bot.reply_to(m, "⚠️ Xizmatlarni yuklab bo'lmadi. Qayta start bosing.")
         return
