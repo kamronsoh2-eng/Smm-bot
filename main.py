@@ -1,14 +1,15 @@
 import asyncio
 import logging
 import os
-from typing import Any
+import sqlite3
+from datetime import datetime
 
 import aiohttp
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -16,13 +17,12 @@ from aiogram.types import (
     Message,
     CallbackQuery,
     InlineKeyboardButton,
-    InlineKeyboardMarkup,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # ============================================================
-#                    SOZLAMALAR
+#                         SOZLAMALAR
 # ============================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -34,7 +34,7 @@ ADMIN_USERNAME = "rxk_17"
 
 
 # ============================================================
-#                       LOGGING
+#                         LOGGING
 # ============================================================
 
 logging.basicConfig(
@@ -46,7 +46,7 @@ logger = logging.getLogger("Best1SMM")
 
 
 # ============================================================
-#                    BOT / DISPATCHER
+#                       BOT
 # ============================================================
 
 bot = Bot(
@@ -62,10 +62,157 @@ dp = Dispatcher(
 
 
 # ============================================================
+#                       DATABASE
+# ============================================================
+
+DB_NAME = "best1smm.db"
+
+
+def init_db():
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            joined_at TEXT
+        )
+    """)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            seensms_order_id TEXT,
+            platform TEXT,
+            service TEXT,
+            quantity INTEGER,
+            link TEXT,
+            created_at TEXT
+        )
+    """)
+
+    conn.commit()
+    conn.close()
+
+
+def save_user(user):
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO users
+        (user_id, username, first_name, joined_at)
+        VALUES (
+            ?,
+            ?,
+            ?,
+            COALESCE(
+                (SELECT joined_at FROM users WHERE user_id = ?),
+                ?
+            )
+        )
+    """, (
+        user.id,
+        user.username or "",
+        user.first_name or "",
+        user.id,
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def save_order(
+    user_id,
+    seensms_order_id,
+    platform,
+    service,
+    quantity,
+    link
+):
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO orders
+        (
+            user_id,
+            seensms_order_id,
+            platform,
+            service,
+            quantity,
+            link,
+            created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        user_id,
+        str(seensms_order_id),
+        platform,
+        service,
+        quantity,
+        link,
+        datetime.now().strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+def get_statistics():
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM users"
+    )
+    users = cursor.fetchone()[0]
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM orders"
+    )
+    orders = cursor.fetchone()[0]
+
+    conn.close()
+
+    return users, orders
+
+
+def get_users():
+
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT user_id FROM users"
+    )
+
+    users = [
+        row[0]
+        for row in cursor.fetchall()
+    ]
+
+    conn.close()
+
+    return users
+
+
+# ============================================================
 #                         STATES
 # ============================================================
 
 class OrderState(StatesGroup):
+
     choosing_platform = State()
     choosing_service = State()
     entering_quantity = State()
@@ -73,39 +220,67 @@ class OrderState(StatesGroup):
     confirming = State()
 
 
+class AdminState(StatesGroup):
+
+    broadcasting = State()
+
+
 # ============================================================
 #                       PLATFORMS
 # ============================================================
 
 PLATFORMS = {
+
     "youtube": {
         "name": "▶️ YouTube",
-        "keywords": ["youtube", "youtu.be"],
-        "domains": ["youtube.com", "youtu.be"],
+        "keywords": [
+            "youtube",
+            "youtu.be"
+        ],
+        "domains": [
+            "youtube.com",
+            "youtu.be"
+        ]
     },
 
     "telegram": {
         "name": "✈️ Telegram",
-        "keywords": ["telegram", "t.me"],
-        "domains": ["t.me", "telegram.me"],
+        "keywords": [
+            "telegram",
+            "t.me"
+        ],
+        "domains": [
+            "t.me",
+            "telegram.me"
+        ]
     },
 
     "instagram": {
         "name": "📸 Instagram",
-        "keywords": ["instagram", "insta"],
-        "domains": ["instagram.com"],
+        "keywords": [
+            "instagram",
+            "insta"
+        ],
+        "domains": [
+            "instagram.com"
+        ]
     },
 
     "tiktok": {
         "name": "🎵 TikTok",
-        "keywords": ["tiktok", "tik tok"],
-        "domains": ["tiktok.com"],
-    },
+        "keywords": [
+            "tiktok",
+            "tik tok"
+        ],
+        "domains": [
+            "tiktok.com"
+        ]
+    }
 }
 
 
 # ============================================================
-#                    ASOSIY MENYU
+#                       MAIN MENU
 # ============================================================
 
 def main_menu():
@@ -124,7 +299,6 @@ def main_menu():
             text="💰 Balans",
             callback_data="balance"
         ),
-
         InlineKeyboardButton(
             text="🆘 Yordam",
             callback_data="help"
@@ -142,40 +316,52 @@ def main_menu():
 
 
 # ============================================================
-#                 PLATFORMALAR MENYUSI
+#                     ADMIN MENU
 # ============================================================
 
-def platform_menu():
+def admin_menu():
 
     builder = InlineKeyboardBuilder()
 
     builder.row(
         InlineKeyboardButton(
-            text="▶️ YouTube",
-            callback_data="platform:youtube"
+            text="📊 Statistika",
+            callback_data="admin_stats"
         ),
-
         InlineKeyboardButton(
-            text="✈️ Telegram",
-            callback_data="platform:telegram"
+            text="💰 API balans",
+            callback_data="admin_balance"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="📸 Instagram",
-            callback_data="platform:instagram"
+            text="📦 Buyurtmalar",
+            callback_data="admin_orders"
         ),
-
         InlineKeyboardButton(
-            text="🎵 TikTok",
-            callback_data="platform:tiktok"
+            text="👥 Foydalanuvchilar",
+            callback_data="admin_users"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="🔙 Orqaga",
+            text="🔌 API tekshirish",
+            callback_data="admin_api"
+        )
+    )
+
+    builder.row(
+        InlineKeyboardButton(
+            text="📢 Reklama yuborish",
+            callback_data="admin_broadcast"
+        )
+    )
+
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Asosiy menyu",
             callback_data="back_main"
         )
     )
@@ -183,32 +369,14 @@ def platform_menu():
     return builder.as_markup()
 
 
-# ============================================================
-#                  BEKOR / ORQAGA
-# ============================================================
-
-def back_order_menu():
+def admin_back():
 
     builder = InlineKeyboardBuilder()
 
     builder.row(
         InlineKeyboardButton(
-            text="🔙 Orqaga",
-            callback_data="back_platforms"
-        )
-    )
-
-    return builder.as_markup()
-
-
-def cancel_menu():
-
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="❌ Bekor qilish",
-            callback_data="cancel_order"
+            text="🔙 Admin panel",
+            callback_data="admin_panel"
         )
     )
 
@@ -216,46 +384,15 @@ def cancel_menu():
 
 
 # ============================================================
-#                   TASDIQLASH MENYUSI
+#                       API
 # ============================================================
 
-def confirm_menu():
-
-    builder = InlineKeyboardBuilder()
-
-    builder.row(
-        InlineKeyboardButton(
-            text="✅ Buyurtma berish",
-            callback_data="confirm_order"
-        )
-    )
-
-    builder.row(
-        InlineKeyboardButton(
-            text="🔙 Orqaga",
-            callback_data="back_link"
-        ),
-
-        InlineKeyboardButton(
-            text="❌ Bekor qilish",
-            callback_data="cancel_order"
-        )
-    )
-
-    return builder.as_markup()
-
-
-# ============================================================
-#                     SEENSMS API
-# ============================================================
-
-async def seensms_request(
-    data: dict
-) -> Any:
+async def seensms_request(data):
 
     if not SEENSMS_API_KEY:
+
         raise RuntimeError(
-            "SEENSMS_API_KEY Render Environment Variables'da topilmadi."
+            "SEENSMS_API_KEY topilmadi"
         )
 
     payload = {
@@ -279,15 +416,19 @@ async def seensms_request(
             text = await response.text()
 
             if response.status != 200:
+
                 raise RuntimeError(
-                    f"SeenSMS HTTP error: {response.status}"
+                    f"HTTP {response.status}"
                 )
 
             try:
+
                 return await response.json()
+
             except Exception:
+
                 raise RuntimeError(
-                    f"SeenSMS JSON xatosi: {text[:500]}"
+                    text[:500]
                 )
 
 
@@ -298,20 +439,6 @@ async def get_services():
     })
 
 
-async def add_order(
-    service_id: int,
-    link: str,
-    quantity: int
-):
-
-    return await seensms_request({
-        "action": "add",
-        "service": service_id,
-        "link": link,
-        "quantity": quantity,
-    })
-
-
 async def get_balance():
 
     return await seensms_request({
@@ -319,18 +446,22 @@ async def get_balance():
     })
 
 
-async def get_order_status(
-    order_id: int
+async def add_order(
+    service_id,
+    link,
+    quantity
 ):
 
     return await seensms_request({
-        "action": "status",
-        "order": order_id,
+        "action": "add",
+        "service": service_id,
+        "link": link,
+        "quantity": quantity
     })
 
 
 # ============================================================
-#                    YORDAMCHI FUNKSIYALAR
+#                  HELPER FUNCTIONS
 # ============================================================
 
 def normalize(value):
@@ -349,19 +480,26 @@ def safe_int(value):
 def calculate_price(rate, quantity):
 
     try:
-        return float(rate) * int(quantity) / 1000
+
+        return (
+            float(rate)
+            * int(quantity)
+            / 1000
+        )
+
     except Exception:
+
         return 0
 
 
-def service_matches_platform(
-    service: dict,
-    platform: str
+def service_matches(
+    service,
+    platform
 ):
 
-    platform_info = PLATFORMS.get(platform)
+    info = PLATFORMS.get(platform)
 
-    if not platform_info:
+    if not info:
         return False
 
     name = normalize(
@@ -372,40 +510,85 @@ def service_matches_platform(
         service.get("category", "")
     )
 
-    text = f"{name} {category}"
+    text = (
+        name
+        + " "
+        + category
+    )
 
     return any(
         keyword in text
-        for keyword in platform_info["keywords"]
+        for keyword in info["keywords"]
     )
 
 
 # ============================================================
-#                  XIZMATLAR TUGMALARI
+#                    PLATFORM MENU
 # ============================================================
 
-def services_menu(services):
+def platform_menu():
+
+    builder = InlineKeyboardBuilder()
+
+    builder.row(
+        InlineKeyboardButton(
+            text="▶️ YouTube",
+            callback_data="platform:youtube"
+        ),
+        InlineKeyboardButton(
+            text="✈️ Telegram",
+            callback_data="platform:telegram"
+        )
+    )
+
+    builder.row(
+        InlineKeyboardButton(
+            text="📸 Instagram",
+            callback_data="platform:instagram"
+        ),
+        InlineKeyboardButton(
+            text="🎵 TikTok",
+            callback_data="platform:tiktok"
+        )
+    )
+
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Orqaga",
+            callback_data="back_main"
+        )
+    )
+
+    return builder.as_markup()
+
+
+def service_menu(services):
 
     builder = InlineKeyboardBuilder()
 
     for service in services:
 
-        service_id = service.get("service")
+        service_id = service.get(
+            "service"
+        )
 
         name = str(
             service.get(
                 "name",
-                "Noma'lum xizmat"
+                "Noma'lum"
             )
         )
 
         if len(name) > 55:
+
             name = name[:52] + "..."
 
         builder.row(
             InlineKeyboardButton(
                 text=f"⚡ {name}",
-                callback_data=f"service:{service_id}"
+                callback_data=(
+                    f"service:{service_id}"
+                )
             )
         )
 
@@ -419,36 +602,79 @@ def services_menu(services):
     return builder.as_markup()
 
 
+def cancel_menu():
+
+    builder = InlineKeyboardBuilder()
+
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Orqaga",
+            callback_data="back_platforms"
+        ),
+        InlineKeyboardButton(
+            text="❌ Bekor qilish",
+            callback_data="cancel_order"
+        )
+    )
+
+    return builder.as_markup()
+
+
+def confirm_menu():
+
+    builder = InlineKeyboardBuilder()
+
+    builder.row(
+        InlineKeyboardButton(
+            text="✅ BUYURTMA BERISH",
+            callback_data="confirm_order"
+        )
+    )
+
+    builder.row(
+        InlineKeyboardButton(
+            text="🔙 Orqaga",
+            callback_data="back_link"
+        ),
+        InlineKeyboardButton(
+            text="❌ Bekor qilish",
+            callback_data="cancel_order"
+        )
+    )
+
+    return builder.as_markup()
+
+
 # ============================================================
 #                         START
 # ============================================================
 
 @dp.message(CommandStart())
-async def start_handler(
+async def start(
     message: Message,
     state: FSMContext
 ):
 
     await state.clear()
 
-    text = (
+    save_user(
+        message.from_user
+    )
+
+    await message.answer(
         "✨ <b>BEST1SMM</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "🚀 SMM xizmatlarining zamonaviy paneli\n\n"
         "📈 Tezkor buyurtmalar\n"
-        "💎 Qulay narxlar\n"
-        "⚡ Avtomatik xizmat\n\n"
-        "👇 <b>Kerakli bo‘limni tanlang:</b>"
-    )
-
-    await message.answer(
-        text,
+        "⚡ Avtomatik xizmatlar\n"
+        "💎 Qulay boshqaruv\n\n"
+        "👇 <b>Kerakli bo‘limni tanlang:</b>",
         reply_markup=main_menu()
     )
 
 
 # ============================================================
-#                   BUYURTMA BERISH
+#                     BUYURTMA
 # ============================================================
 
 @dp.callback_query(
@@ -466,8 +692,7 @@ async def new_order(
     await callback.message.edit_text(
         "🛒 <b>BUYURTMA BERISH</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🌐 Kerakli platformani tanlang:\n\n"
-        "👇 Quyidagilardan birini tanlang:",
+        "🌐 Platformani tanlang:",
         reply_markup=platform_menu()
     )
 
@@ -475,7 +700,7 @@ async def new_order(
 
 
 # ============================================================
-#                    PLATFORM TANLASH
+#                  PLATFORM TANLASH
 # ============================================================
 
 @dp.callback_query(
@@ -487,45 +712,27 @@ async def choose_platform(
     state: FSMContext
 ):
 
-    platform = callback.data.split(":", 1)[1]
-
-    if platform not in PLATFORMS:
-
-        await callback.answer(
-            "❌ Platforma topilmadi!",
-            show_alert=True
-        )
-
-        return
+    platform = callback.data.split(
+        ":",
+        1
+    )[1]
 
     await state.update_data(
         platform=platform
     )
 
     await callback.message.edit_text(
-        "⏳ <b>Tariflar yuklanmoqda...</b>\n\n"
-        "🔄 Iltimos, biroz kuting..."
+        "⏳ <b>Tariflar yuklanmoqda...</b>"
     )
 
     try:
 
         services = await get_services()
 
-        if not isinstance(services, list):
-
-            await callback.message.edit_text(
-                "❌ <b>Tariflarni olishda xatolik!</b>\n\n"
-                "SeenSMS API noto‘g‘ri javob qaytardi.",
-                reply_markup=platform_menu()
-            )
-
-            await callback.answer()
-            return
-
         filtered = [
             service
             for service in services
-            if service_matches_platform(
+            if service_matches(
                 service,
                 platform
             )
@@ -534,9 +741,7 @@ async def choose_platform(
         if not filtered:
 
             await callback.message.edit_text(
-                f"😔 <b>"
-                f"{PLATFORMS[platform]['name']}"
-                f"</b> uchun tarif topilmadi.\n\n"
+                "😔 <b>Tarif topilmadi.</b>\n\n"
                 "Boshqa platformani tanlang.",
                 reply_markup=platform_menu()
             )
@@ -555,22 +760,19 @@ async def choose_platform(
         await callback.message.edit_text(
             f"{PLATFORMS[platform]['name']}\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            "⚡ <b>Tarifni tanlang:</b>\n\n"
-            "👇 Kerakli xizmatni bosing:",
-            reply_markup=services_menu(filtered)
+            "⚡ <b>Tarifni tanlang:</b>",
+            reply_markup=service_menu(filtered)
         )
 
     except Exception as error:
 
         logger.exception(
-            "Services error: %s",
+            "Service error: %s",
             error
         )
 
         await callback.message.edit_text(
-            "❌ <b>Texnik xatolik!</b>\n\n"
-            "Tariflarni yuklab bo‘lmadi.\n"
-            "Keyinroq qayta urinib ko‘ring.",
+            "❌ <b>Tariflarni yuklab bo‘lmadi.</b>",
             reply_markup=platform_menu()
         )
 
@@ -578,7 +780,7 @@ async def choose_platform(
 
 
 # ============================================================
-#                      TARIF TANLASH
+#                     TARIF TANLASH
 # ============================================================
 
 @dp.callback_query(
@@ -597,14 +799,12 @@ async def choose_service(
 
     data = await state.get_data()
 
-    services = data.get(
-        "available_services",
-        []
-    )
-
     selected = None
 
-    for service in services:
+    for service in data.get(
+        "available_services",
+        []
+    ):
 
         if str(
             service.get("service")
@@ -626,11 +826,17 @@ async def choose_service(
         service_id=service_id,
         service_name=selected.get(
             "name",
-            "Noma'lum xizmat"
+            "Noma'lum"
         ),
-        service_rate=selected.get("rate"),
-        service_min=selected.get("min"),
-        service_max=selected.get("max")
+        service_rate=selected.get(
+            "rate"
+        ),
+        service_min=selected.get(
+            "min"
+        ),
+        service_max=selected.get(
+            "max"
+        )
     )
 
     await state.set_state(
@@ -640,9 +846,12 @@ async def choose_service(
     await callback.message.edit_text(
         "🔢 <b>MIQDORNI KIRITING</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚡ <b>{selected.get('name')}</b>\n\n"
-        f"📊 Minimum: <b>{selected.get('min')}</b>\n"
-        f"📈 Maximum: <b>{selected.get('max')}</b>\n\n"
+        f"⚡ Tarif:\n"
+        f"<b>{selected.get('name')}</b>\n\n"
+        f"📊 Minimum: "
+        f"<b>{selected.get('min')}</b>\n"
+        f"📈 Maximum: "
+        f"<b>{selected.get('max')}</b>\n\n"
         "💡 Masalan: <code>1000</code>\n\n"
         "👇 Nechta kerakligini yozing:",
         reply_markup=cancel_menu()
@@ -652,13 +861,13 @@ async def choose_service(
 
 
 # ============================================================
-#                     MIQDOR KIRITISH
+#                    MIQDOR KIRITISH
 # ============================================================
 
 @dp.message(
     OrderState.entering_quantity
 )
-async def enter_quantity(
+async def quantity(
     message: Message,
     state: FSMContext
 ):
@@ -672,15 +881,14 @@ async def enter_quantity(
     if not value.isdigit():
 
         await message.answer(
-            "❌ <b>Noto‘g‘ri miqdor!</b>\n\n"
-            "Faqat raqam kiriting.\n\n"
+            "❌ <b>Faqat son kiriting!</b>\n\n"
             "Masalan: <code>1000</code>",
             reply_markup=cancel_menu()
         )
 
         return
 
-    quantity = int(value)
+    quantity_value = int(value)
 
     data = await state.get_data()
 
@@ -692,23 +900,21 @@ async def enter_quantity(
         data.get("service_max")
     )
 
-    if minimum is not None and quantity < minimum:
+    if minimum and quantity_value < minimum:
 
         await message.answer(
-            f"❌ <b>Miqdor juda kam!</b>\n\n"
-            f"📊 Minimum: <b>{minimum}</b>\n\n"
-            "Qaytadan kiriting:",
+            f"❌ Miqdor minimumdan kam.\n\n"
+            f"📊 Minimum: <b>{minimum}</b>",
             reply_markup=cancel_menu()
         )
 
         return
 
-    if maximum is not None and quantity > maximum:
+    if maximum and quantity_value > maximum:
 
         await message.answer(
-            f"❌ <b>Miqdor juda ko‘p!</b>\n\n"
-            f"📈 Maximum: <b>{maximum}</b>\n\n"
-            "Qaytadan kiriting:",
+            f"❌ Miqdor maximumdan ko‘p.\n\n"
+            f"📈 Maximum: <b>{maximum}</b>",
             reply_markup=cancel_menu()
         )
 
@@ -716,11 +922,11 @@ async def enter_quantity(
 
     price = calculate_price(
         data.get("service_rate"),
-        quantity
+        quantity_value
     )
 
     await state.update_data(
-        quantity=quantity,
+        quantity=quantity_value,
         calculated_price=price
     )
 
@@ -731,54 +937,45 @@ async def enter_quantity(
     await message.answer(
         "🔗 <b>HAVOLANI KIRITING</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔢 Miqdor: <b>{quantity:,}</b>\n"
-        f"💰 Taxminiy narx: <b>{price:,.2f}</b>\n\n"
+        f"🔢 Miqdor: "
+        f"<b>{quantity_value:,}</b>\n"
+        f"💰 Narx: "
+        f"<b>{price:,.2f}</b>\n\n"
         "📎 Buyurtma beriladigan havolani yuboring.\n\n"
-        "Masalan:\n"
-        "<code>https://instagram.com/...</code>\n\n"
-        "👇 Havolani yuboring:",
-        reply_markup=back_order_menu()
+        "👇 Masalan:\n"
+        "<code>https://instagram.com/...</code>",
+        reply_markup=cancel_menu()
     )
 
 
 # ============================================================
-#                     HAVOLA KIRITISH
+#                      HAVOLA
 # ============================================================
 
 @dp.message(
     OrderState.entering_link
 )
-async def enter_link(
+async def link(
     message: Message,
     state: FSMContext
 ):
 
-    link = (
+    link_value = (
         message.text.strip()
         if message.text
         else ""
     )
 
-    if not link:
-
-        await message.answer(
-            "❌ Havola bo‘sh bo‘lishi mumkin emas!",
-            reply_markup=back_order_menu()
-        )
-
-        return
-
     if not (
-        link.startswith("https://")
-        or link.startswith("http://")
+        link_value.startswith("https://")
+        or link_value.startswith("http://")
     ):
 
         await message.answer(
             "❌ <b>Noto‘g‘ri havola!</b>\n\n"
-            "Havola <code>https://</code> "
-            "yoki <code>http://</code> bilan "
+            "Havola http:// yoki https:// bilan "
             "boshlanishi kerak.",
-            reply_markup=back_order_menu()
+            reply_markup=cancel_menu()
         )
 
         return
@@ -789,38 +986,34 @@ async def enter_link(
         "platform"
     )
 
-    domains = PLATFORMS[platform]["domains"]
+    domains = PLATFORMS[
+        platform
+    ]["domains"]
 
     if not any(
-        domain in link.lower()
+        domain in link_value.lower()
         for domain in domains
     ):
 
         await message.answer(
-            f"❌ <b>Havola noto‘g‘ri platformaga tegishli!</b>\n\n"
-            f"Tanlangan platforma: "
-            f"<b>{PLATFORMS[platform]['name']}</b>\n\n"
-            "To‘g‘ri havolani yuboring.",
-            reply_markup=back_order_menu()
+            "❌ <b>Havola platformaga mos emas!</b>\n\n"
+            f"Tanlangan: "
+            f"<b>{PLATFORMS[platform]['name']}</b>",
+            reply_markup=cancel_menu()
         )
 
         return
 
     await state.update_data(
-        link=link
+        link=link_value
     )
 
     await state.set_state(
         OrderState.confirming
     )
 
-    price = data.get(
-        "calculated_price",
-        0
-    )
-
     await message.answer(
-        "🧾 <b>BUYURTMA MA'LUMOTLARI</b>\n"
+        "🧾 <b>BUYURTMA TASDIG‘I</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🌐 Platforma:\n"
         f"<b>{PLATFORMS[platform]['name']}</b>\n\n"
@@ -829,86 +1022,16 @@ async def enter_link(
         f"🔢 Miqdor:\n"
         f"<b>{data.get('quantity'):,}</b>\n\n"
         f"🔗 Havola:\n"
-        f"<code>{link}</code>\n\n"
+        f"<code>{link_value}</code>\n\n"
         f"💰 Narx:\n"
-        f"<b>{price:,.2f}</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "👇 Hammasi to‘g‘ri bo‘lsa tasdiqlang:",
+        f"<b>{data.get('calculated_price'):,.2f}</b>\n\n"
+        "👇 Ma’lumotlarni tekshiring:",
         reply_markup=confirm_menu()
     )
 
 
 # ============================================================
-#                HAVOLADAN ORQAGA QAYTISH
-# ============================================================
-
-@dp.callback_query(
-    OrderState.entering_link,
-    F.data == "back_platforms"
-)
-async def back_from_link(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-
-    data = await state.get_data()
-
-    platform = data.get(
-        "platform"
-    )
-
-    services = data.get(
-        "available_services",
-        []
-    )
-
-    await state.set_state(
-        OrderState.choosing_service
-    )
-
-    await callback.message.edit_text(
-        f"{PLATFORMS[platform]['name']}\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "⚡ <b>Tarifni tanlang:</b>",
-        reply_markup=services_menu(services)
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-#                 TASDIQLASHDAN ORQAGA
-# ============================================================
-
-@dp.callback_query(
-    OrderState.confirming,
-    F.data == "back_link"
-)
-async def back_from_confirm(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-
-    data = await state.get_data()
-
-    await state.set_state(
-        OrderState.entering_link
-    )
-
-    await callback.message.edit_text(
-        "🔗 <b>HAVOLANI KIRITING</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔢 Miqdor: "
-        f"<b>{data.get('quantity'):,}</b>\n\n"
-        "👇 Havolani qaytadan yuboring:",
-        reply_markup=back_order_menu()
-    )
-
-    await callback.answer()
-
-
-# ============================================================
-#                   BUYURTMA TASDIQLASH
+#                BUYURTMA TASDIQLASH
 # ============================================================
 
 @dp.callback_query(
@@ -939,11 +1062,6 @@ async def confirm_order(
             )
         )
 
-        logger.info(
-            "Order response: %s",
-            response
-        )
-
         if (
             isinstance(response, dict)
             and response.get("order")
@@ -951,45 +1069,38 @@ async def confirm_order(
 
             order_id = response["order"]
 
-            await state.update_data(
-                order_id=order_id
+            save_order(
+                user_id=callback.from_user.id,
+                seensms_order_id=order_id,
+                platform=data["platform"],
+                service=data["service_name"],
+                quantity=data["quantity"],
+                link=data["link"]
             )
 
             await callback.message.edit_text(
                 "🎉 <b>BUYURTMA QABUL QILINDI!</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"🆔 Buyurtma ID:\n"
-                f"<code>{order_id}</code>\n\n"
-                f"🌐 Platforma: "
-                f"<b>{PLATFORMS[data['platform']]['name']}</b>\n\n"
-                f"🔢 Miqdor: "
-                f"<b>{data['quantity']:,}</b>\n\n"
-                "⚡ Buyurtma tizimga yuborildi.\n"
-                "⏳ Bajarilishi tez orada boshlanadi.\n\n"
-                "✨ <b>Best1SMM</b>",
+                f"🆔 ID: <code>{order_id}</code>\n\n"
+                f"🌐 {PLATFORMS[data['platform']]['name']}\n"
+                f"🔢 Miqdor: <b>{data['quantity']:,}</b>\n\n"
+                "⏳ Buyurtma bajarilishi boshlanadi.",
                 reply_markup=main_menu()
             )
 
         else:
 
-            if isinstance(response, dict):
-
-                error = (
-                    response.get("error")
-                    or response.get("message")
-                    or "Noma'lum xatolik"
-                )
-
-            else:
-
-                error = "Noma'lum API xatosi"
+            error = (
+                response.get("error")
+                or response.get("message")
+                if isinstance(response, dict)
+                else "Noma'lum xatolik"
+            )
 
             await callback.message.edit_text(
-                "❌ <b>BUYURTMA BERILMADI</b>\n"
-                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "❌ <b>BUYURTMA BERILMADI</b>\n\n"
                 f"📛 Sabab:\n"
-                f"<code>{error}</code>\n\n"
-                "Qaytadan urinib ko‘rishingiz mumkin.",
+                f"<code>{error}</code>",
                 reply_markup=main_menu()
             )
 
@@ -1002,13 +1113,11 @@ async def confirm_order(
 
         await callback.message.edit_text(
             "❌ <b>Texnik xatolik!</b>\n\n"
-            "SeenSMS API bilan bog‘lanib bo‘lmadi.\n"
-            "Keyinroq qayta urinib ko‘ring.",
+            "SeenSMS API bilan aloqa bo‘lmadi.",
             reply_markup=main_menu()
         )
 
     await state.clear()
-
     await callback.answer()
 
 
@@ -1036,19 +1145,15 @@ async def cancel_order(
 
 
 # ============================================================
-#                       BALANS
+#                     BALANS
 # ============================================================
 
 @dp.callback_query(
     F.data == "balance"
 )
-async def balance(
+async def user_balance(
     callback: CallbackQuery
 ):
-
-    await callback.message.edit_text(
-        "⏳ <b>Balans tekshirilmoqda...</b>"
-    )
 
     try:
 
@@ -1056,7 +1161,7 @@ async def balance(
 
         if isinstance(response, dict):
 
-            value = response.get(
+            balance_value = response.get(
                 "balance",
                 "Noma'lum"
             )
@@ -1066,31 +1171,30 @@ async def balance(
                 ""
             )
 
-            await callback.message.edit_text(
+            text = (
                 "💰 <b>BALANS</b>\n"
                 "━━━━━━━━━━━━━━━━━━━━\n\n"
-                f"💳 Balans: <b>{value}</b>\n"
-                f"💵 Valyuta: <b>{currency}</b>",
-                reply_markup=main_menu()
+                f"💳 Balans: "
+                f"<b>{balance_value}</b>\n"
+                f"💵 Valyuta: "
+                f"<b>{currency}</b>"
             )
 
         else:
 
-            await callback.message.edit_text(
-                "❌ Balansni olib bo‘lmadi.",
-                reply_markup=main_menu()
+            text = (
+                "❌ Balansni olishda xatolik."
             )
 
-    except Exception as error:
-
-        logger.exception(
-            "Balance error: %s",
-            error
+        await callback.message.edit_text(
+            text,
+            reply_markup=main_menu()
         )
 
+    except Exception:
+
         await callback.message.edit_text(
-            "❌ <b>API xatosi!</b>\n\n"
-            "Balansni olib bo‘lmadi.",
+            "❌ API bilan bog‘lanib bo‘lmadi.",
             reply_markup=main_menu()
         )
 
@@ -1098,7 +1202,7 @@ async def balance(
 
 
 # ============================================================
-#                  SHAXSIY KABINET
+#                   SHAXSIY KABINET
 # ============================================================
 
 @dp.callback_query(
@@ -1122,8 +1226,7 @@ async def profile(
         f"🆔 ID: <code>{user.id}</code>\n"
         f"👤 Username: <b>{username}</b>\n"
         f"📛 Ism: <b>{user.first_name}</b>\n\n"
-        "📦 Buyurtmalar: <b>—</b>\n"
-        "💰 Balans: <b>—</b>\n\n"
+        "📦 Buyurtmalar: <b>Ko‘rilmoqda</b>\n\n"
         "✨ <b>Best1SMM</b>",
         reply_markup=main_menu()
     )
@@ -1146,12 +1249,11 @@ async def help_handler(
         "🆘 <b>YORDAM</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "🛒 <b>Buyurtma berish</b>\n"
-        "Kerakli platforma va tarifni tanlang.\n"
-        "Keyin miqdor va havolani kiriting.\n\n"
+        "Platforma → tarif → miqdor → havola.\n\n"
         "💰 <b>Balans</b>\n"
-        "Panel balansini ko‘rish.\n\n"
+        "Panel balansini ko‘rsatadi.\n\n"
         "👤 <b>Shaxsiy kabinet</b>\n"
-        "Profil ma’lumotlarini ko‘rish.\n\n"
+        "Profil ma’lumotlaringiz.\n\n"
         f"👨‍💻 Admin: @{ADMIN_USERNAME}",
         reply_markup=main_menu()
     )
@@ -1160,7 +1262,439 @@ async def help_handler(
 
 
 # ============================================================
-#                      ASOSIY MENYUGA
+#                    ADMIN TEKSHIRUV
+# ============================================================
+
+def is_admin(user):
+
+    return (
+        user.username
+        and
+        user.username.lower()
+        == ADMIN_USERNAME.lower()
+    )
+
+
+# ============================================================
+#                     /ADMIN
+# ============================================================
+
+@dp.message(
+    Command("admin")
+)
+async def admin_command(
+    message: Message
+):
+
+    if not is_admin(
+        message.from_user
+    ):
+
+        await message.answer(
+            "⛔ Sizda admin panelga ruxsat yo‘q."
+        )
+
+        return
+
+    await message.answer(
+        "👑 <b>BEST1SMM ADMIN PANEL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Xush kelibsiz, admin!\n\n"
+        "👇 Kerakli bo‘limni tanlang:",
+        reply_markup=admin_menu()
+    )
+
+
+# ============================================================
+#                    ADMIN PANEL
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_panel"
+)
+async def admin_panel(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+
+        await callback.answer(
+            "⛔ Ruxsat yo‘q!",
+            show_alert=True
+        )
+
+        return
+
+    await callback.message.edit_text(
+        "👑 <b>BEST1SMM ADMIN PANEL</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "👇 Kerakli bo‘limni tanlang:",
+        reply_markup=admin_menu()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+#                    ADMIN STATISTIKA
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_stats"
+)
+async def admin_stats(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    users, orders = get_statistics()
+
+    await callback.message.edit_text(
+        "📊 <b>STATISTIKA</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👥 Foydalanuvchilar: "
+        f"<b>{users}</b>\n\n"
+        f"📦 Buyurtmalar: "
+        f"<b>{orders}</b>\n\n"
+        f"👑 Admin: @{ADMIN_USERNAME}",
+        reply_markup=admin_back()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+#                  ADMIN API BALANS
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_balance"
+)
+async def admin_balance(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    await callback.message.edit_text(
+        "⏳ <b>SeenSMS balans tekshirilmoqda...</b>"
+    )
+
+    try:
+
+        response = await get_balance()
+
+        if isinstance(response, dict):
+
+            balance_value = response.get(
+                "balance",
+                "Noma'lum"
+            )
+
+            currency = response.get(
+                "currency",
+                ""
+            )
+
+            text = (
+                "💰 <b>SEENSMS BALANS</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"💳 Balans: <b>{balance_value}</b>\n"
+                f"💵 Valyuta: <b>{currency}</b>"
+            )
+
+        else:
+
+            text = (
+                "❌ API noto‘g‘ri javob qaytardi."
+            )
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=admin_back()
+        )
+
+    except Exception as error:
+
+        await callback.message.edit_text(
+            "❌ <b>API xatosi!</b>\n\n"
+            f"<code>{error}</code>",
+            reply_markup=admin_back()
+        )
+
+    await callback.answer()
+
+
+# ============================================================
+#                    ADMIN API TEST
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_api"
+)
+async def admin_api(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    await callback.message.edit_text(
+        "🔌 <b>API TEKSHIRILMOQDA...</b>"
+    )
+
+    try:
+
+        response = await get_services()
+
+        if isinstance(
+            response,
+            list
+        ):
+
+            await callback.message.edit_text(
+                "🟢 <b>API ISHLAYAPTI</b>\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                f"⚡ Xizmatlar: "
+                f"<b>{len(response)}</b>\n\n"
+                "🔗 SeenSMS API ulanishi muvaffaqiyatli.",
+                reply_markup=admin_back()
+            )
+
+        else:
+
+            await callback.message.edit_text(
+                "🟡 <b>API JAVOBI SHUBHALI</b>\n\n"
+                "API ishladi, lekin kutilgan formatda "
+                "javob qaytmadi.",
+                reply_markup=admin_back()
+            )
+
+    except Exception as error:
+
+        await callback.message.edit_text(
+            "🔴 <b>API ISHLAMAYAPTI</b>\n\n"
+            f"<code>{error}</code>",
+            reply_markup=admin_back()
+        )
+
+    await callback.answer()
+
+
+# ============================================================
+#                  ADMIN USERS
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_users"
+)
+async def admin_users(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    users, orders = get_statistics()
+
+    await callback.message.edit_text(
+        "👥 <b>FOYDALANUVCHILAR</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 Jami foydalanuvchilar: "
+        f"<b>{users}</b>\n\n"
+        "Foydalanuvchilar bazaga avtomatik "
+        "saqlanadi.",
+        reply_markup=admin_back()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+#                  ADMIN ORDERS
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_orders"
+)
+async def admin_orders(
+    callback: CallbackQuery
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    conn = sqlite3.connect(
+        DB_NAME
+    )
+
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT
+            seensms_order_id,
+            user_id,
+            platform,
+            quantity,
+            created_at
+        FROM orders
+        ORDER BY id DESC
+        LIMIT 10
+    """)
+
+    rows = cursor.fetchall()
+
+    conn.close()
+
+    if not rows:
+
+        text = (
+            "📦 <b>BUYURTMALAR</b>\n\n"
+            "Hozircha buyurtmalar yo‘q."
+        )
+
+    else:
+
+        text = (
+            "📦 <b>SO‘NGGI BUYURTMALAR</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+
+        for row in rows:
+
+            order_id = row[0]
+            user_id = row[1]
+            platform = row[2]
+            quantity_value = row[3]
+            created = row[4]
+
+            text += (
+                f"🆔 <code>{order_id}</code>\n"
+                f"👤 <code>{user_id}</code>\n"
+                f"🌐 {platform}\n"
+                f"🔢 {quantity_value:,}\n"
+                f"🕐 {created}\n"
+                "──────────────\n"
+            )
+
+    await callback.message.edit_text(
+        text,
+        reply_markup=admin_back()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+#                  ADMIN BROADCAST
+# ============================================================
+
+@dp.callback_query(
+    F.data == "admin_broadcast"
+)
+async def admin_broadcast(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(
+        callback.from_user
+    ):
+        return
+
+    await state.set_state(
+        AdminState.broadcasting
+    )
+
+    await callback.message.edit_text(
+        "📢 <b>REKLAMA YUBORISH</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Yubormoqchi bo‘lgan xabaringizni "
+        "keyingi xabarda yuboring.\n\n"
+        "⚠️ Xabar bot foydalanuvchilariga yuboriladi.",
+        reply_markup=admin_back()
+    )
+
+    await callback.answer()
+
+
+# ============================================================
+#                 BROADCAST SEND
+# ============================================================
+
+@dp.message(
+    AdminState.broadcasting
+)
+async def broadcast_send(
+    message: Message,
+    state: FSMContext
+):
+
+    if not is_admin(
+        message.from_user
+    ):
+
+        await state.clear()
+        return
+
+    users = get_users()
+
+    sent = 0
+    failed = 0
+
+    await message.answer(
+        f"📢 <b>Yuborish boshlandi...</b>\n\n"
+        f"👥 Foydalanuvchilar: <b>{len(users)}</b>"
+    )
+
+    for user_id in users:
+
+        try:
+
+            await bot.copy_message(
+                chat_id=user_id,
+                from_chat_id=message.chat.id,
+                message_id=message.message_id
+            )
+
+            sent += 1
+
+        except Exception:
+
+            failed += 1
+
+        await asyncio.sleep(
+            0.05
+        )
+
+    await state.clear()
+
+    await message.answer(
+        "📢 <b>REKLAMA YAKUNLANDI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"✅ Yuborildi: <b>{sent}</b>\n"
+        f"❌ Yuborilmadi: <b>{failed}</b>",
+        reply_markup=admin_menu()
+    )
+
+
+# ============================================================
+#                       BACK MAIN
 # ============================================================
 
 @dp.callback_query(
@@ -1184,7 +1718,7 @@ async def back_main(
 
 
 # ============================================================
-#                  PLATFORMALARGA ORQAGA
+#                    BACK PLATFORMS
 # ============================================================
 
 @dp.callback_query(
@@ -1210,43 +1744,25 @@ async def back_platforms(
 
 
 # ============================================================
-#                    UNKNOWN MESSAGE
-# ============================================================
-
-@dp.message()
-async def unknown_message(
-    message: Message
-):
-
-    await message.answer(
-        "🤖 <b>BEST1SMM</b>\n\n"
-        "Kerakli bo‘limni tugmalar orqali tanlang:",
-        reply_markup=main_menu()
-    )
-
-
-# ============================================================
-#                       RUN BOT
+#                       RUN
 # ============================================================
 
 async def main():
 
     if not BOT_TOKEN:
-
         raise RuntimeError(
-            "❌ Render'da BOT_TOKEN Environment Variable "
-            "topilmadi!"
+            "BOT_TOKEN Render Environment Variables'da yo‘q!"
         )
 
     if not SEENSMS_API_KEY:
-
         raise RuntimeError(
-            "❌ Render'da SEENSMS_API_KEY Environment Variable "
-            "topilmadi!"
+            "SEENSMS_API_KEY Render Environment Variables'da yo‘q!"
         )
 
+    init_db()
+
     logger.info(
-        "🚀 Best1SMM ishga tushmoqda..."
+        "🚀 Best1SMM ishga tushdi"
     )
 
     await bot.delete_webhook(
@@ -1260,12 +1776,4 @@ async def main():
 
 if __name__ == "__main__":
 
-    try:
-
-        asyncio.run(main())
-
-    except KeyboardInterrupt:
-
-        logger.info(
-            "Bot to‘xtatildi."
-)
+    asyncio.run(main())
