@@ -24,21 +24,42 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 
 # =========================================================
-# SETTINGS
+# CONFIG
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SEENSMS_API_KEY = os.getenv("SEENSMS_API_KEY")
 
-# SeenSMS API manzilini Render Environment Variable'dan olish
 SEENSMS_API_URL = os.getenv(
     "SEENSMS_API_URL",
     "https://seensms.uz/api/v1"
 )
 
-ADMIN_USERNAME = "rxk_17"
+ADMIN_USERNAME = os.getenv(
+    "ADMIN_USERNAME",
+    "rxk_17"
+).replace("@", "")
+
+ADMIN_ID = os.getenv("ADMIN_ID")
 
 DB_NAME = "best1smm.db"
+
+
+if not BOT_TOKEN:
+    raise RuntimeError("BOT_TOKEN topilmadi!")
+
+if not ADMIN_ID:
+    raise RuntimeError(
+        "ADMIN_ID Render Environment Variables'da yo'q!"
+    )
+
+try:
+    ADMIN_ID = int(ADMIN_ID)
+except ValueError:
+    raise RuntimeError(
+        "ADMIN_ID faqat raqam bo'lishi kerak!"
+    )
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,13 +68,6 @@ logging.basicConfig(
 
 logger = logging.getLogger("BEST1SMM")
 
-
-# =========================================================
-# BOT
-# =========================================================
-
-if not BOT_TOKEN:
-    raise RuntimeError("BOT_TOKEN topilmadi!")
 
 bot = Bot(
     token=BOT_TOKEN,
@@ -71,13 +85,13 @@ dp = Dispatcher(
 # DATABASE
 # =========================================================
 
-def db():
+def get_db():
     return sqlite3.connect(DB_NAME)
 
 
 def init_db():
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -126,7 +140,7 @@ def init_db():
 
 def save_user(user):
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     now = datetime.now().strftime(
@@ -134,7 +148,8 @@ def save_user(user):
     )
 
     cur.execute("""
-        INSERT INTO users (
+        INSERT INTO users
+        (
             user_id,
             username,
             first_name,
@@ -151,7 +166,7 @@ def save_user(user):
             updated_at=excluded.updated_at
     """, (
         user.id,
-        user.username or "",
+        (user.username or "").replace("@", ""),
         user.first_name or "",
         now,
         now
@@ -163,11 +178,15 @@ def save_user(user):
 
 def get_balance(user_id):
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT balance FROM users WHERE user_id=?",
+        """
+        SELECT balance
+        FROM users
+        WHERE user_id=?
+        """,
         (user_id,)
     )
 
@@ -175,52 +194,81 @@ def get_balance(user_id):
 
     conn.close()
 
-    if not row:
-        return 0
-
-    return float(row[0])
+    return float(row[0]) if row else 0.0
 
 
-def change_balance(
-    user_id,
+def find_user_by_username(username):
+
+    username = (
+        username
+        .strip()
+        .replace("@", "")
+        .lower()
+    )
+
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            user_id,
+            username,
+            first_name,
+            balance
+        FROM users
+        WHERE LOWER(username)=?
+    """, (username,))
+
+    row = cur.fetchone()
+
+    conn.close()
+
+    return row
+
+
+def change_balance_by_username(
+    username,
     amount,
     operation,
     admin_username
 ):
 
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute(
-        "SELECT balance FROM users WHERE user_id=?",
-        (user_id,)
-    )
-
-    row = cur.fetchone()
+    row = find_user_by_username(username)
 
     if not row:
-        conn.close()
-        return None
+        return {
+            "success": False,
+            "reason": "not_found"
+        }
 
-    old_balance = float(row[0])
+    user_id = row[0]
+    old_balance = float(row[3])
 
     if operation == "add":
-        new_balance = old_balance + amount
 
-    elif operation == "remove":
-        new_balance = old_balance - amount
+        new_balance = (
+            old_balance + amount
+        )
 
     else:
-        conn.close()
-        return None
 
-    if new_balance < 0:
-        conn.close()
-        return False
+        new_balance = (
+            old_balance - amount
+        )
+
+        if new_balance < 0:
+            return {
+                "success": False,
+                "reason": "negative"
+            }
+
+    conn = get_db()
+    cur = conn.cursor()
 
     cur.execute("""
         UPDATE users
-        SET balance=?, updated_at=?
+        SET balance=?,
+            updated_at=?
         WHERE user_id=?
     """, (
         new_balance,
@@ -231,7 +279,8 @@ def change_balance(
     ))
 
     cur.execute("""
-        INSERT INTO balance_logs (
+        INSERT INTO balance_logs
+        (
             user_id,
             admin_username,
             amount,
@@ -256,16 +305,27 @@ def change_balance(
     conn.commit()
     conn.close()
 
-    return new_balance
+    return {
+        "success": True,
+        "user_id": user_id,
+        "username": row[1],
+        "first_name": row[2],
+        "old_balance": old_balance,
+        "new_balance": new_balance
+    }
 
 
 def charge_balance(user_id, amount):
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT balance FROM users WHERE user_id=?",
+        """
+        SELECT balance
+        FROM users
+        WHERE user_id=?
+        """,
         (user_id,)
     )
 
@@ -285,7 +345,8 @@ def charge_balance(user_id, amount):
 
     cur.execute("""
         UPDATE users
-        SET balance=?, updated_at=?
+        SET balance=?,
+            updated_at=?
         WHERE user_id=?
     """, (
         new_balance,
@@ -301,24 +362,6 @@ def charge_balance(user_id, amount):
     return new_balance
 
 
-def restore_balance(user_id, amount):
-
-    conn = db()
-    cur = conn.cursor()
-
-    cur.execute("""
-        UPDATE users
-        SET balance=balance+?
-        WHERE user_id=?
-    """, (
-        amount,
-        user_id
-    ))
-
-    conn.commit()
-    conn.close()
-
-
 def save_order(
     user_id,
     api_order_id,
@@ -330,11 +373,12 @@ def save_order(
     link
 ):
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
-        INSERT INTO orders (
+        INSERT INTO orders
+        (
             user_id,
             api_order_id,
             platform,
@@ -366,9 +410,9 @@ def save_order(
     conn.close()
 
 
-def statistics():
+def get_statistics():
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
@@ -382,23 +426,29 @@ def statistics():
     orders = cur.fetchone()[0]
 
     cur.execute(
-        "SELECT COALESCE(SUM(price),0) FROM orders"
+        """
+        SELECT COALESCE(SUM(price), 0)
+        FROM orders
+        """
     )
-    revenue = cur.fetchone()[0]
+    revenue = float(cur.fetchone()[0])
 
     cur.execute(
-        "SELECT COALESCE(SUM(balance),0) FROM users"
+        """
+        SELECT COALESCE(SUM(balance), 0)
+        FROM users
+        """
     )
-    balances = cur.fetchone()[0]
+    balances = float(cur.fetchone()[0])
 
     conn.close()
 
     return users, orders, revenue, balances
 
 
-def get_users():
+def get_all_users():
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
@@ -406,8 +456,8 @@ def get_users():
     )
 
     result = [
-        x[0]
-        for x in cur.fetchall()
+        row[0]
+        for row in cur.fetchall()
     ]
 
     conn.close()
@@ -420,7 +470,6 @@ def get_users():
 # =========================================================
 
 class OrderState(StatesGroup):
-
     platform = State()
     service = State()
     quantity = State()
@@ -429,19 +478,17 @@ class OrderState(StatesGroup):
 
 
 class AdminBalanceState(StatesGroup):
-
-    user_id = State()
+    username = State()
     amount = State()
     confirm = State()
 
 
-class AdminBroadcastState(StatesGroup):
-
+class BroadcastState(StatesGroup):
     message = State()
 
 
 # =========================================================
-# PLATFORM
+# PLATFORMS
 # =========================================================
 
 PLATFORMS = {
@@ -450,7 +497,9 @@ PLATFORMS = {
         "title": "▶️ YouTube",
         "keywords": [
             "youtube",
-            "youtu.be"
+            "youtube views",
+            "youtube likes",
+            "youtube subscribers"
         ],
         "domains": [
             "youtube.com",
@@ -462,7 +511,9 @@ PLATFORMS = {
         "title": "✈️ Telegram",
         "keywords": [
             "telegram",
-            "t.me"
+            "telegram views",
+            "telegram members",
+            "telegram reactions"
         ],
         "domains": [
             "t.me",
@@ -474,7 +525,9 @@ PLATFORMS = {
         "title": "📸 Instagram",
         "keywords": [
             "instagram",
-            "insta"
+            "instagram followers",
+            "instagram likes",
+            "instagram views"
         ],
         "domains": [
             "instagram.com"
@@ -485,7 +538,9 @@ PLATFORMS = {
         "title": "🎵 TikTok",
         "keywords": [
             "tiktok",
-            "tik tok"
+            "tiktok views",
+            "tiktok likes",
+            "tiktok followers"
         ],
         "domains": [
             "tiktok.com"
@@ -495,7 +550,7 @@ PLATFORMS = {
 
 
 # =========================================================
-# MAIN REPLY KEYBOARD
+# MAIN MENU
 # =========================================================
 
 def main_keyboard():
@@ -525,7 +580,7 @@ def main_keyboard():
 
 
 # =========================================================
-# INLINE ORDER KEYBOARDS
+# ORDER KEYBOARDS
 # =========================================================
 
 def platform_keyboard():
@@ -556,15 +611,15 @@ def platform_keyboard():
 
     builder.row(
         InlineKeyboardButton(
-            text="🔙 Orqaga",
-            callback_data="order_back_main"
+            text="❌ Bekor qilish",
+            callback_data="order_cancel"
         )
     )
 
     return builder.as_markup()
 
 
-def back_order():
+def order_back_keyboard():
 
     builder = InlineKeyboardBuilder()
 
@@ -582,7 +637,7 @@ def back_order():
     return builder.as_markup()
 
 
-def confirm_order_keyboard():
+def confirm_keyboard():
 
     builder = InlineKeyboardBuilder()
 
@@ -646,14 +701,14 @@ def admin_keyboard():
 
     builder.row(
         InlineKeyboardButton(
-            text="🔌 API holati",
+            text="🔌 SeenSMS API",
             callback_data="adm:api"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="📢 Reklama yuborish",
+            text="📢 Reklama",
             callback_data="adm:broadcast"
         )
     )
@@ -662,7 +717,10 @@ def admin_keyboard():
         InlineKeyboardButton(
             text="🔄 Yangilash",
             callback_data="adm:panel"
-        ),
+        )
+    )
+
+    builder.row(
         InlineKeyboardButton(
             text="🏠 Asosiy menyu",
             callback_data="adm:home"
@@ -672,7 +730,7 @@ def admin_keyboard():
     return builder.as_markup()
 
 
-def admin_back():
+def admin_back_keyboard():
 
     builder = InlineKeyboardBuilder()
 
@@ -686,28 +744,28 @@ def admin_back():
     return builder.as_markup()
 
 
-def balance_admin_keyboard():
+def balance_keyboard():
 
     builder = InlineKeyboardBuilder()
 
     builder.row(
         InlineKeyboardButton(
             text="➕ Balans qo‘shish",
-            callback_data="adm:add_balance"
+            callback_data="adm:add"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="➖ Balansdan ayirish",
-            callback_data="adm:remove_balance"
+            text="➖ Balans ayirish",
+            callback_data="adm:remove"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="🔎 Balansni tekshirish",
-            callback_data="adm:check_balance"
+            text="🔎 Username balansini tekshirish",
+            callback_data="adm:check"
         )
     )
 
@@ -722,71 +780,23 @@ def balance_admin_keyboard():
 
 
 # =========================================================
-# HELPERS
+# ADMIN CHECK
 # =========================================================
 
-def is_admin(user):
+def is_admin(user_id):
 
-    return bool(
-        user.username
-        and user.username.lower()
-        == ADMIN_USERNAME.lower()
-    )
-
-
-def valid_number(text):
-
-    try:
-        value = float(
-            text.replace(" ", "")
-        )
-
-        if value <= 0:
-            return None
-
-        return value
-
-    except Exception:
-        return None
-
-
-def service_matches(service, platform):
-
-    data = PLATFORMS[platform]
-
-    text = (
-        str(service.get("name", ""))
-        + " "
-        + str(service.get("category", ""))
-    ).lower()
-
-    return any(
-        keyword in text
-        for keyword in data["keywords"]
-    )
-
-
-def calculate_price(rate, quantity):
-
-    try:
-        return (
-            float(rate)
-            * int(quantity)
-            / 1000
-        )
-    except Exception:
-        return 0
+    return user_id == ADMIN_ID
 
 
 # =========================================================
-# SEENSMS API
+# API
 # =========================================================
 
 async def api_request(data):
 
     if not SEENSMS_API_KEY:
         raise RuntimeError(
-            "SEENSMS_API_KEY Render'da yo‘q!"
+            "SEENSMS_API_KEY topilmadi!"
         )
 
     payload = {
@@ -817,27 +827,28 @@ async def api_request(data):
 
             try:
                 return await response.json()
+
             except Exception:
                 raise RuntimeError(
                     text[:500]
                 )
 
 
-async def api_services():
+async def get_services():
 
     return await api_request({
         "action": "services"
     })
 
 
-async def api_balance():
+async def get_api_balance():
 
     return await api_request({
         "action": "balance"
     })
 
 
-async def api_add_order(
+async def add_api_order(
     service,
     link,
     quantity
@@ -871,16 +882,17 @@ async def start(
         "✨ <b>BEST1SMM</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "🚀 SMM xizmatlar paneliga xush kelibsiz!\n\n"
-        "⚡ Tezkor xizmatlar\n"
-        "📈 Qulay buyurtmalar\n"
-        "💳 Admin orqali balans to‘ldirish\n\n"
-        "👇 <b>Kerakli bo‘limni tanlang:</b>",
+        "⚡ YouTube\n"
+        "✈️ Telegram\n"
+        "📸 Instagram\n"
+        "🎵 TikTok\n\n"
+        "👇 <b>Bo‘limni tanlang:</b>",
         reply_markup=main_keyboard()
     )
 
 
 # =========================================================
-# ORDER START
+# ORDER
 # =========================================================
 
 @dp.message(
@@ -891,6 +903,8 @@ async def order_start(
     state: FSMContext
 ):
 
+    await state.clear()
+
     await state.set_state(
         OrderState.platform
     )
@@ -898,15 +912,10 @@ async def order_start(
     await message.answer(
         "🛒 <b>BUYURTMA BERISH</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🌐 Qaysi platformaga buyurtma "
-        "bermoqchisiz?",
+        "🌐 Platformani tanlang:",
         reply_markup=platform_keyboard()
     )
 
-
-# =========================================================
-# PLATFORM
-# =========================================================
 
 @dp.callback_query(
     OrderState.platform,
@@ -929,7 +938,7 @@ async def choose_platform(
 
     try:
 
-        services = await api_services()
+        services = await get_services()
 
         if not isinstance(
             services,
@@ -937,29 +946,52 @@ async def choose_platform(
         ):
 
             await callback.message.edit_text(
-                "❌ <b>API noto‘g‘ri javob qaytardi.</b>",
+                "❌ API xizmatlar ro‘yxatini "
+                "qaytarmadi.",
                 reply_markup=platform_keyboard()
             )
 
+            await callback.answer()
             return
 
-        filtered = [
-            service
-            for service in services
-            if service_matches(
-                service,
-                platform
-            )
-        ]
+        filtered = []
+
+        for service in services:
+
+            text = (
+                str(
+                    service.get(
+                        "name",
+                        ""
+                    )
+                )
+                + " "
+                + str(
+                    service.get(
+                        "category",
+                        ""
+                    )
+                )
+            ).lower()
+
+            if any(
+                keyword.lower() in text
+                for keyword in
+                PLATFORMS[platform]["keywords"]
+            ):
+                filtered.append(
+                    service
+                )
 
         if not filtered:
 
             await callback.message.edit_text(
-                "😔 <b>Bu platforma uchun xizmat "
-                "topilmadi.</b>",
+                "😔 <b>Xizmat topilmadi.</b>\n\n"
+                "Boshqa platformani tanlang.",
                 reply_markup=platform_keyboard()
             )
 
+            await callback.answer()
             return
 
         await state.update_data(
@@ -970,7 +1002,12 @@ async def choose_platform(
 
         for service in filtered:
 
-            sid = service.get("service")
+            sid = str(
+                service.get(
+                    "service"
+                )
+            )
+
             name = str(
                 service.get(
                     "name",
@@ -1011,17 +1048,13 @@ async def choose_platform(
         logger.exception(error)
 
         await callback.message.edit_text(
-            "❌ <b>SeenSMS API bilan aloqa "
-            "bo‘lmadi.</b>",
+            "❌ <b>SeenSMS API xatosi.</b>\n\n"
+            "API sozlamalarini tekshiring.",
             reply_markup=platform_keyboard()
         )
 
     await callback.answer()
 
-
-# =========================================================
-# SERVICE
-# =========================================================
 
 @dp.callback_query(
     OrderState.service,
@@ -1044,7 +1077,9 @@ async def choose_service(
     ):
 
         if str(
-            service.get("service")
+            service.get(
+                "service"
+            )
         ) == service_id:
 
             selected = service
@@ -1065,9 +1100,18 @@ async def choose_service(
             "name",
             "Xizmat"
         ),
-        rate=selected.get("rate"),
-        minimum=selected.get("min"),
-        maximum=selected.get("max")
+        rate=selected.get(
+            "rate",
+            0
+        ),
+        minimum=selected.get(
+            "min",
+            0
+        ),
+        maximum=selected.get(
+            "max",
+            0
+        )
     )
 
     await state.set_state(
@@ -1077,20 +1121,17 @@ async def choose_service(
     await callback.message.edit_text(
         "🔢 <b>MIQDORNI KIRITING</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"⚡ Xizmat:\n"
-        f"<b>{selected.get('name')}</b>\n\n"
-        f"📊 Minimum: <b>{selected.get('min')}</b>\n"
-        f"📈 Maximum: <b>{selected.get('max')}</b>\n\n"
-        "👇 Nechta kerakligini yozing:",
-        reply_markup=back_order()
+        f"⚡ <b>{selected.get('name')}</b>\n\n"
+        f"📊 Minimum: "
+        f"<b>{selected.get('min')}</b>\n"
+        f"📈 Maximum: "
+        f"<b>{selected.get('max')}</b>\n\n"
+        "Nechta kerakligini yozing:",
+        reply_markup=order_back_keyboard()
     )
 
     await callback.answer()
 
-
-# =========================================================
-# QUANTITY
-# =========================================================
 
 @dp.message(
     OrderState.quantity
@@ -1108,52 +1149,71 @@ async def quantity(
     if not text.isdigit():
 
         await message.answer(
-            "❌ <b>Faqat butun son kiriting.</b>\n\n"
+            "❌ <b>Faqat son kiriting.</b>\n\n"
             "Masalan: <code>1000</code>",
-            reply_markup=back_order()
+            reply_markup=order_back_keyboard()
         )
 
         return
 
-    quantity_value = int(text)
+    amount = int(text)
 
     data = await state.get_data()
 
     minimum = int(
-        float(data.get("minimum", 0))
+        float(
+            data.get(
+                "minimum",
+                0
+            )
+        )
     )
 
     maximum = int(
-        float(data.get("maximum", 0))
+        float(
+            data.get(
+                "maximum",
+                0
+            )
+        )
     )
 
-    if minimum and quantity_value < minimum:
+    if minimum and amount < minimum:
 
         await message.answer(
-            f"❌ Minimum miqdor: "
-            f"<b>{minimum}</b>",
-            reply_markup=back_order()
+            f"❌ Minimum: <b>{minimum}</b>",
+            reply_markup=order_back_keyboard()
         )
 
         return
 
-    if maximum and quantity_value > maximum:
+    if maximum and amount > maximum:
 
         await message.answer(
-            f"❌ Maximum miqdor: "
-            f"<b>{maximum}</b>",
-            reply_markup=back_order()
+            f"❌ Maximum: <b>{maximum}</b>",
+            reply_markup=order_back_keyboard()
         )
 
         return
 
-    price = calculate_price(
-        data.get("rate"),
-        quantity_value
-    )
+    try:
+
+        price = (
+            float(data["rate"])
+            * amount
+            / 1000
+        )
+
+    except Exception:
+
+        await message.answer(
+            "❌ Xizmat narxini hisoblab bo‘lmadi."
+        )
+
+        return
 
     await state.update_data(
-        quantity=quantity_value,
+        quantity=amount,
         price=price
     )
 
@@ -1164,21 +1224,17 @@ async def quantity(
     await message.answer(
         "🔗 <b>HAVOLANI KIRITING</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"🔢 Miqdor: <b>{quantity_value:,}</b>\n"
+        f"🔢 Miqdor: <b>{amount:,}</b>\n"
         f"💰 Narx: <b>{price:,.2f} so‘m</b>\n\n"
-        "📎 Buyurtma havolasini yuboring:",
-        reply_markup=back_order()
+        "📎 Havolani yuboring:",
+        reply_markup=order_back_keyboard()
     )
 
-
-# =========================================================
-# LINK
-# =========================================================
 
 @dp.message(
     OrderState.link
 )
-async def link(
+async def order_link(
     message: Message,
     state: FSMContext
 ):
@@ -1186,45 +1242,43 @@ async def link(
     if not message.text:
         return
 
-    link_value = message.text.strip()
+    link = message.text.strip()
 
     if not (
-        link_value.startswith("https://")
-        or link_value.startswith("http://")
+        link.startswith("https://")
+        or link.startswith("http://")
     ):
 
         await message.answer(
             "❌ <b>Havola noto‘g‘ri.</b>\n\n"
             "https:// bilan boshlanadigan "
             "havola yuboring.",
-            reply_markup=back_order()
+            reply_markup=order_back_keyboard()
         )
 
         return
 
     data = await state.get_data()
 
-    platform = data["platform"]
-
     domains = PLATFORMS[
-        platform
+        data["platform"]
     ]["domains"]
 
     if not any(
-        domain in link_value.lower()
+        domain in link.lower()
         for domain in domains
     ):
 
         await message.answer(
-            "❌ <b>Havola tanlangan platformaga "
-            "mos emas.</b>",
-            reply_markup=back_order()
+            "❌ Havola tanlangan platformaga "
+            "mos emas.",
+            reply_markup=order_back_keyboard()
         )
 
         return
 
     await state.update_data(
-        link=link_value
+        link=link
     )
 
     await state.set_state(
@@ -1235,7 +1289,7 @@ async def link(
         "🧾 <b>BUYURTMANI TASDIQLASH</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"🌐 Platforma: "
-        f"<b>{PLATFORMS[platform]['title']}</b>\n\n"
+        f"<b>{PLATFORMS[data['platform']]['title']}</b>\n\n"
         f"⚡ Xizmat:\n"
         f"<b>{data['service_name']}</b>\n\n"
         f"🔢 Miqdor: "
@@ -1243,49 +1297,46 @@ async def link(
         f"💰 Narx: "
         f"<b>{data['price']:,.2f} so‘m</b>\n\n"
         f"🔗 Havola:\n"
-        f"<code>{link_value}</code>\n\n"
-        "👇 Hammasi to‘g‘ri bo‘lsa tasdiqlang:",
-        reply_markup=confirm_order_keyboard()
+        f"<code>{link}</code>\n\n"
+        "Tasdiqlaysizmi?",
+        reply_markup=confirm_keyboard()
     )
 
-
-# =========================================================
-# CONFIRM ORDER
-# =========================================================
 
 @dp.callback_query(
     OrderState.confirm,
     F.data == "order_confirm"
 )
-async def confirm_order(
+async def order_confirm(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
     data = await state.get_data()
 
-    user_id = callback.from_user.id
-    price = float(data["price"])
+    price = float(
+        data["price"]
+    )
 
-    balance = get_balance(user_id)
+    balance = get_balance(
+        callback.from_user.id
+    )
 
     if balance < price:
 
         await callback.message.edit_text(
-            "❌ <b>Balans yetarli emas.</b>\n"
+            "❌ <b>BALANS YETARLI EMAS</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"💰 Buyurtma narxi: "
+            f"💰 Kerak: "
             f"<b>{price:,.2f} so‘m</b>\n"
-            f"💳 Sizning balansingiz: "
+            f"💳 Balans: "
             f"<b>{balance:,.2f} so‘m</b>\n\n"
-            "💳 Hisobni to‘ldirish uchun "
-            "pastdagi tugmadan foydalaning.",
+            "Hisobni admin orqali to‘ldiring.",
             reply_markup=platform_keyboard()
         )
 
         await state.clear()
         await callback.answer()
-
         return
 
     await callback.message.edit_text(
@@ -1294,74 +1345,74 @@ async def confirm_order(
 
     try:
 
-        response = await api_add_order(
+        result = await add_api_order(
             service=data["service_id"],
             link=data["link"],
             quantity=data["quantity"]
         )
 
-        order_id = None
-
-        if isinstance(
-            response,
+        if not isinstance(
+            result,
             dict
         ):
-            order_id = response.get("order")
+
+            raise RuntimeError(
+                "API javobi noto‘g‘ri."
+            )
+
+        order_id = result.get(
+            "order"
+        )
 
         if not order_id:
 
-            error = (
-                response.get("error")
-                if isinstance(response, dict)
-                else "Noma'lum API xatosi"
+            error = result.get(
+                "error",
+                "Noma'lum xato"
             )
 
             await callback.message.edit_text(
-                "❌ <b>Buyurtma yaratilmadi.</b>\n\n"
+                f"❌ <b>Buyurtma yaratilmadi.</b>\n\n"
                 f"📛 {error}",
                 reply_markup=platform_keyboard()
             )
 
             await state.clear()
             await callback.answer()
-
             return
 
         new_balance = charge_balance(
-            user_id,
+            callback.from_user.id,
             price
         )
 
         if new_balance is False:
 
             await callback.message.edit_text(
-                "❌ Balans bilan bog‘liq xatolik.",
+                "❌ Balansni yechishda xatolik.",
                 reply_markup=platform_keyboard()
             )
 
             await state.clear()
             await callback.answer()
-
             return
 
         save_order(
-            user_id=user_id,
-            api_order_id=order_id,
-            platform=data["platform"],
-            service_id=data["service_id"],
-            service_name=data["service_name"],
-            quantity=data["quantity"],
-            price=price,
-            link=data["link"]
+            callback.from_user.id,
+            order_id,
+            data["platform"],
+            data["service_id"],
+            data["service_name"],
+            data["quantity"],
+            price,
+            data["link"]
         )
 
         await callback.message.edit_text(
             "🎉 <b>BUYURTMA QABUL QILINDI!</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"🆔 Buyurtma ID: "
-            f"<code>{order_id}</code>\n"
-            f"🌐 Platforma: "
-            f"<b>{PLATFORMS[data['platform']]['title']}</b>\n"
+            f"🆔 ID: <code>{order_id}</code>\n"
+            f"🌐 {PLATFORMS[data['platform']]['title']}\n"
             f"🔢 Miqdor: "
             f"<b>{data['quantity']:,}</b>\n"
             f"💰 To‘lov: "
@@ -1377,7 +1428,7 @@ async def confirm_order(
         logger.exception(error)
 
         await callback.message.edit_text(
-            "❌ <b>Server/API xatosi.</b>\n\n"
+            "❌ <b>SeenSMS API xatosi.</b>\n\n"
             "Buyurtma yuborilmadi.",
             reply_markup=platform_keyboard()
         )
@@ -1387,41 +1438,8 @@ async def confirm_order(
 
 
 # =========================================================
-# ORDER CANCEL / BACK
+# ORDER BACK
 # =========================================================
-
-@dp.callback_query(
-    F.data == "order_cancel"
-)
-async def order_cancel(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-
-    await state.clear()
-
-    await callback.message.edit_text(
-        "❌ <b>Buyurtma bekor qilindi.</b>\n\n"
-        "Asosiy menyuga qaytdingiz."
-    )
-
-    await callback.answer()
-
-
-@dp.callback_query(
-    F.data == "order_back_main"
-)
-async def order_back_main(
-    callback: CallbackQuery,
-    state: FSMContext
-):
-
-    await state.clear()
-
-    await callback.message.delete()
-
-    await callback.answer()
-
 
 @dp.callback_query(
     F.data == "order_back_platform"
@@ -1458,23 +1476,40 @@ async def order_back_link(
     )
 
     await callback.message.edit_text(
-        "🔗 <b>HAVOLANI KIRITING</b>\n"
+        "🔗 <b>HAVOLA</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📎 Buyurtma havolasini yuboring:",
-        reply_markup=back_order()
+        "📎 Havolani yuboring:",
+        reply_markup=order_back_keyboard()
+    )
+
+    await callback.answer()
+
+
+@dp.callback_query(
+    F.data == "order_cancel"
+)
+async def order_cancel(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    await state.clear()
+
+    await callback.message.edit_text(
+        "❌ <b>Buyurtma bekor qilindi.</b>"
     )
 
     await callback.answer()
 
 
 # =========================================================
-# BALANCE — USER
+# USER BALANCE
 # =========================================================
 
 @dp.message(
     F.text == "💳 Hisobni to‘ldirish"
 )
-async def user_deposit(
+async def deposit(
     message: Message
 ):
 
@@ -1496,11 +1531,9 @@ async def user_deposit(
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"💰 Joriy balans: "
         f"<b>{balance:,.2f} so‘m</b>\n\n"
-        "Botda balans faqat admin orqali "
-        "to‘ldiriladi.\n\n"
-        "💬 To‘lovni admin bilan kelishib oling "
-        "va to‘lovdan so‘ng admin balansingizni "
-        "bot orqali to‘ldiradi.",
+        "Balansni faqat admin orqali "
+        "to‘ldirish mumkin.\n\n"
+        f"👑 Admin: @{ADMIN_USERNAME}",
         reply_markup=builder.as_markup()
     )
 
@@ -1522,11 +1555,15 @@ async def profile(
         user.id
     )
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute(
-        "SELECT COUNT(*) FROM orders WHERE user_id=?",
+        """
+        SELECT COUNT(*)
+        FROM orders
+        WHERE user_id=?
+        """,
         (user.id,)
     )
 
@@ -1537,7 +1574,7 @@ async def profile(
     username = (
         f"@{user.username}"
         if user.username
-        else "yo‘q"
+        else "username yo‘q"
     )
 
     await message.answer(
@@ -1560,21 +1597,20 @@ async def profile(
 @dp.message(
     F.text == "🆘 Yordam"
 )
-async def help_user(
+async def help_message(
     message: Message
 ):
 
     await message.answer(
         "🆘 <b>YORDAM</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "🛒 <b>Buyurtma berish</b>\n"
-        "Platforma → xizmat → miqdor → "
-        "havola → tasdiqlash.\n\n"
-        "💳 <b>Hisobni to‘ldirish</b>\n"
-        "Admin bilan bog‘laning.\n\n"
-        "👤 <b>Shaxsiy kabinet</b>\n"
-        "Balans va buyurtmalarni ko‘ring.\n\n"
-        f"👨‍💻 Admin: @{ADMIN_USERNAME}",
+        "🛒 Buyurtma berish — xizmat tanlash "
+        "va buyurtma berish.\n\n"
+        "💳 Hisobni to‘ldirish — admin bilan "
+        "bog‘lanish.\n\n"
+        "👤 Shaxsiy kabinet — balans va "
+        "buyurtmalar.\n\n"
+        f"👑 Admin: @{ADMIN_USERNAME}",
         reply_markup=main_keyboard()
     )
 
@@ -1589,43 +1625,45 @@ async def admin_command(
 ):
 
     if not is_admin(
-        message.from_user
+        message.from_user.id
     ):
 
         await message.answer(
-            "⛔ <b>Ruxsat yo‘q.</b>"
+            "⛔ <b>Siz admin emassiz.</b>"
         )
 
         return
 
-    await show_admin_panel(
+    await send_admin_panel(
         message
     )
 
 
-async def show_admin_panel(
+async def send_admin_panel(
     target
 ):
 
-    users, orders, revenue, balances = statistics()
+    users, orders, revenue, balances = (
+        get_statistics()
+    )
 
     text = (
-        "👑 <b>BEST1SMM ADMIN</b>\n"
+        "👑 <b>BEST1SMM ADMIN PANEL</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "📊 <b>UMUMIY STATISTIKA</b>\n\n"
-        f"👥 Foydalanuvchilar: "
-        f"<b>{users}</b>\n"
-        f"📦 Buyurtmalar: "
-        f"<b>{orders}</b>\n"
-        f"💰 Buyurtma summasi: "
+        f"👥 Foydalanuvchilar: <b>{users}</b>\n"
+        f"📦 Buyurtmalar: <b>{orders}</b>\n"
+        f"💰 Buyurtmalar: "
         f"<b>{revenue:,.2f} so‘m</b>\n"
         f"💳 User balanslari: "
         f"<b>{balances:,.2f} so‘m</b>\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "🛠 <b>BOSHQARUV PANELI</b>"
+        "👇 <b>Boshqaruv bo‘limini tanlang:</b>"
     )
 
-    if isinstance(target, Message):
+    if isinstance(
+        target,
+        Message
+    ):
 
         await target.answer(
             text,
@@ -1640,19 +1678,15 @@ async def show_admin_panel(
         )
 
 
-# =========================================================
-# ADMIN PANEL
-# =========================================================
-
 @dp.callback_query(
     F.data == "adm:panel"
 )
-async def adm_panel(
+async def admin_panel(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         await callback.answer(
             "⛔ Ruxsat yo‘q!",
@@ -1660,41 +1694,8 @@ async def adm_panel(
         )
         return
 
-    await show_admin_panel(
+    await send_admin_panel(
         callback
-    )
-
-    await callback.answer()
-
-
-# =========================================================
-# ADMIN STATS
-# =========================================================
-
-@dp.callback_query(
-    F.data == "adm:stats"
-)
-async def adm_stats(
-    callback: CallbackQuery
-):
-
-    if not is_admin(
-        callback.from_user
-    ):
-        return
-
-    users, orders, revenue, balances = statistics()
-
-    await callback.message.edit_text(
-        "📊 <b>STATISTIKA</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👥 Foydalanuvchilar: <b>{users}</b>\n"
-        f"📦 Buyurtmalar: <b>{orders}</b>\n"
-        f"💰 Buyurtmalar summasi: "
-        f"<b>{revenue:,.2f} so‘m</b>\n"
-        f"💳 User balanslari: "
-        f"<b>{balances:,.2f} so‘m</b>",
-        reply_markup=admin_back()
     )
 
     await callback.answer()
@@ -1707,37 +1708,34 @@ async def adm_stats(
 @dp.callback_query(
     F.data == "adm:balance"
 )
-async def adm_balance(
+async def admin_balance(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
     await callback.message.edit_text(
         "💳 <b>BALANS BOSHQARUVI</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "Kerakli amalni tanlang:",
-        reply_markup=balance_admin_keyboard()
+        "⚡ Foydalanuvchini <b>@username</b> "
+        "orqali tanlang.",
+        reply_markup=balance_keyboard()
     )
 
     await callback.answer()
 
 
-# =========================================================
-# ADD / REMOVE BALANCE
-# =========================================================
-
-async def start_balance_change(
+async def start_balance(
     callback,
     state,
     operation
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
@@ -1746,38 +1744,40 @@ async def start_balance_change(
     )
 
     await state.set_state(
-        AdminBalanceState.user_id
+        AdminBalanceState.username
     )
 
-    title = (
-        "➕ <b>BALANS QO‘SHISH</b>"
+    action = (
+        "➕ BALANS QO‘SHISH"
         if operation == "add"
         else
-        "➖ <b>BALANSDAN AYIRISH</b>"
+        "➖ BALANS AYIRISH"
     )
 
     await callback.message.edit_text(
-        f"{title}\n"
+        f"👑 <b>{action}</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        "👤 Foydalanuvchining Telegram ID'sini "
+        "👤 Foydalanuvchining username'ini "
         "kiriting:\n\n"
         "Masalan:\n"
-        "<code>123456789</code>",
-        reply_markup=admin_back()
+        "<code>@kamron123</code>\n\n"
+        "⚠️ User botda avval /start bosgan "
+        "bo‘lishi kerak.",
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
 
 
 @dp.callback_query(
-    F.data == "adm:add_balance"
+    F.data == "adm:add"
 )
-async def adm_add_balance(
+async def admin_add(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
-    await start_balance_change(
+    await start_balance(
         callback,
         state,
         "add"
@@ -1785,14 +1785,14 @@ async def adm_add_balance(
 
 
 @dp.callback_query(
-    F.data == "adm:remove_balance"
+    F.data == "adm:remove"
 )
-async def adm_remove_balance(
+async def admin_remove(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
-    await start_balance_change(
+    await start_balance(
         callback,
         state,
         "remove"
@@ -1800,41 +1800,55 @@ async def adm_remove_balance(
 
 
 # =========================================================
-# ADMIN USER ID
+# ADMIN USERNAME
 # =========================================================
 
 @dp.message(
-    AdminBalanceState.user_id
+    AdminBalanceState.username
 )
-async def admin_user_id(
+async def admin_username(
     message: Message,
     state: FSMContext
 ):
 
     if not is_admin(
-        message.from_user
+        message.from_user.id
     ):
         return
 
-    if not message.text.isdigit():
+    username = (
+        message.text
+        .strip()
+        .replace("@", "")
+    )
+
+    if not username:
 
         await message.answer(
-            "❌ Faqat Telegram ID son bo‘lishi kerak."
+            "❌ Username kiriting."
         )
 
         return
 
-    user_id = int(
-        message.text
+    user = find_user_by_username(
+        username
     )
 
-    balance = get_balance(
-        user_id
-    )
+    if not user:
+
+        await message.answer(
+            "❌ <b>Foydalanuvchi topilmadi.</b>\n\n"
+            f"🔎 Qidirildi: <b>@{username}</b>\n\n"
+            "U botga /start bosganini tekshiring."
+        )
+
+        return
 
     await state.update_data(
-        target_user_id=user_id,
-        old_balance=balance
+        target_username=username,
+        target_user_id=user[0],
+        target_name=user[2],
+        old_balance=float(user[3])
     )
 
     await state.set_state(
@@ -1843,7 +1857,7 @@ async def admin_user_id(
 
     data = await state.get_data()
 
-    operation_text = (
+    action = (
         "qo‘shiladigan"
         if data["operation"] == "add"
         else "ayiriladigan"
@@ -1852,11 +1866,12 @@ async def admin_user_id(
     await message.answer(
         "💰 <b>SUMMA</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 User ID: <code>{user_id}</code>\n"
+        f"👤 User: <b>@{username}</b>\n"
+        f"📛 Ism: <b>{user[2]}</b>\n"
         f"💳 Hozirgi balans: "
-        f"<b>{balance:,.2f} so‘m</b>\n\n"
-        f"💵 {operation_text} summani kiriting:\n\n"
-        "Masalan: <code>20000</code>"
+        f"<b>{float(user[3]):,.2f} so‘m</b>\n\n"
+        f"💵 {action} summani yozing:\n"
+        "Masalan: <code>50000</code>"
     )
 
 
@@ -1873,35 +1888,33 @@ async def admin_amount(
 ):
 
     if not is_admin(
-        message.from_user
+        message.from_user.id
     ):
         return
 
-    amount = valid_number(
-        message.text
-    )
+    try:
 
-    if amount is None:
+        amount = float(
+            message.text
+            .replace(" ", "")
+            .replace(",", ".")
+        )
+
+        if amount <= 0:
+            raise ValueError
+
+    except Exception:
 
         await message.answer(
-            "❌ To‘g‘ri musbat summa kiriting."
+            "❌ To‘g‘ri summa kiriting.\n\n"
+            "Masalan: <code>50000</code>"
         )
 
         return
 
-    await state.update_data(
-        amount=amount
-    )
-
-    await state.set_state(
-        AdminBalanceState.confirm
-    )
-
     data = await state.get_data()
 
-    operation = data["operation"]
-
-    if operation == "add":
+    if data["operation"] == "add":
 
         new_balance = (
             data["old_balance"]
@@ -1919,40 +1932,47 @@ async def admin_amount(
 
         action = "➖ Ayiriladi"
 
-    if new_balance < 0:
+        if new_balance < 0:
 
-        await message.answer(
-            "❌ Bu summa ayirilsa balans "
-            "0 dan pastga tushadi."
-        )
+            await message.answer(
+                "❌ Bu summani ayirib bo‘lmaydi.\n"
+                "Balans manfiy bo‘lib qoladi."
+            )
 
-        await state.clear()
+            return
 
-        return
+    await state.update_data(
+        amount=amount,
+        new_balance=new_balance
+    )
+
+    await state.set_state(
+        AdminBalanceState.confirm
+    )
 
     builder = InlineKeyboardBuilder()
 
     builder.row(
         InlineKeyboardButton(
             text="✅ TASDIQLASH",
-            callback_data="adm:balance_confirm"
+            callback_data="adm:confirm_balance"
         )
     )
 
     builder.row(
         InlineKeyboardButton(
-            text="❌ Bekor qilish",
-            callback_data="adm:balance_cancel"
+            text="❌ BEKOR QILISH",
+            callback_data="adm:cancel_balance"
         )
     )
 
     await message.answer(
-        "🧾 <b>OPERATSIYANI TASDIQLASH</b>\n"
+        "🧾 <b>BALANS OPERATSIYASI</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
-        f"👤 User ID: "
-        f"<code>{data['target_user_id']}</code>\n"
+        f"👤 User: "
+        f"<b>@{data['target_username']}</b>\n"
         f"{action}: "
-        f"<b>{amount:,.2f} so‘m</b>\n"
+        f"<b>{amount:,.2f} so‘m</b>\n\n"
         f"💳 Eski balans: "
         f"<b>{data['old_balance']:,.2f}</b>\n"
         f"💰 Yangi balans: "
@@ -1963,92 +1983,101 @@ async def admin_amount(
 
 
 # =========================================================
-# ADMIN BALANCE CONFIRM
+# ADMIN CONFIRM
 # =========================================================
 
 @dp.callback_query(
-    F.data == "adm:balance_confirm"
+    F.data == "adm:confirm_balance"
 )
-async def adm_balance_confirm(
+async def confirm_balance(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
     data = await state.get_data()
 
-    result = change_balance(
-        user_id=data["target_user_id"],
+    result = change_balance_by_username(
+        username=data["target_username"],
         amount=data["amount"],
         operation=data["operation"],
         admin_username=ADMIN_USERNAME
     )
 
-    if result is None:
+    if not result["success"]:
 
-        await callback.message.edit_text(
-            "❌ <b>Foydalanuvchi topilmadi.</b>",
-            reply_markup=admin_back()
-        )
+        if result["reason"] == "not_found":
 
-    elif result is False:
-
-        await callback.message.edit_text(
-            "❌ <b>Balansni ayirish mumkin emas.</b>",
-            reply_markup=admin_back()
-        )
-
-    else:
-
-        symbol = (
-            "➕"
-            if data["operation"] == "add"
-            else "➖"
-        )
-
-        await callback.message.edit_text(
-            "✅ <b>BALANS O‘ZGARTIRILDI</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 User ID: "
-            f"<code>{data['target_user_id']}</code>\n"
-            f"{symbol} Summa: "
-            f"<b>{data['amount']:,.2f} so‘m</b>\n"
-            f"💳 Yangi balans: "
-            f"<b>{result:,.2f} so‘m</b>\n\n"
-            f"👑 Admin: @{ADMIN_USERNAME}",
-            reply_markup=admin_back()
-        )
-
-        # Userga xabar
-        try:
-
-            await bot.send_message(
-                data["target_user_id"],
-                (
-                    "💳 <b>BALANS YANGILANDI</b>\n"
-                    "━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"{symbol} "
-                    f"<b>{data['amount']:,.2f} so‘m</b>\n"
-                    f"💰 Yangi balans: "
-                    f"<b>{result:,.2f} so‘m</b>"
-                )
+            text = (
+                "❌ Foydalanuvchi topilmadi."
             )
 
-        except Exception:
-            pass
+        else:
+
+            text = (
+                "❌ Balansni ayirib bo‘lmaydi."
+            )
+
+        await callback.message.edit_text(
+            text,
+            reply_markup=admin_back_keyboard()
+        )
+
+        await state.clear()
+        await callback.answer()
+        return
+
+    symbol = (
+        "➕"
+        if data["operation"] == "add"
+        else "➖"
+    )
+
+    await callback.message.edit_text(
+        "✅ <b>BALANS MUVAFFAQIYATLI "
+        "O‘ZGARTIRILDI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 User: "
+        f"<b>@{result['username']}</b>\n"
+        f"{symbol} Summa: "
+        f"<b>{data['amount']:,.2f} so‘m</b>\n"
+        f"💳 Yangi balans: "
+        f"<b>{result['new_balance']:,.2f} so‘m</b>\n\n"
+        f"👑 Admin: @{ADMIN_USERNAME}",
+        reply_markup=admin_back_keyboard()
+    )
+
+    try:
+
+        await bot.send_message(
+            result["user_id"],
+            "💳 <b>BALANSINGIZ YANGILANDI</b>\n"
+            "━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"{symbol} Summa: "
+            f"<b>{data['amount']:,.2f} so‘m</b>\n"
+            f"💰 Yangi balans: "
+            f"<b>{result['new_balance']:,.2f} so‘m</b>"
+        )
+
+    except Exception as error:
+
+        logger.warning(
+            "Userga balans xabari yuborilmadi: %s",
+            error
+        )
 
     await state.clear()
     await callback.answer()
 
 
 @dp.callback_query(
-    F.data == "adm:balance_cancel"
+    F.data == "adm:cancel_balance"
 )
-async def adm_balance_cancel(
+async def cancel_balance(
     callback: CallbackQuery,
     state: FSMContext
 ):
@@ -2057,7 +2086,42 @@ async def adm_balance_cancel(
 
     await callback.message.edit_text(
         "❌ <b>Operatsiya bekor qilindi.</b>",
-        reply_markup=admin_back()
+        reply_markup=admin_back_keyboard()
+    )
+
+    await callback.answer()
+
+
+# =========================================================
+# ADMIN CHECK USERNAME BALANCE
+# =========================================================
+
+@dp.callback_query(
+    F.data == "adm:check"
+)
+async def admin_check(
+    callback: CallbackQuery,
+    state: FSMContext
+):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+        return
+
+    await state.set_state(
+        AdminBalanceState.username
+    )
+
+    await state.update_data(
+        operation="check"
+    )
+
+    await callback.message.edit_text(
+        "🔎 <b>USERNAME BO‘YICHA BALANS</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "@username yuboring:",
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
@@ -2070,51 +2134,46 @@ async def adm_balance_cancel(
 @dp.callback_query(
     F.data == "adm:api"
 )
-async def adm_api(
+async def admin_api(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
     await callback.message.edit_text(
-        "🔌 <b>API TEKSHIRILMOQDA...</b>"
+        "⏳ <b>SeenSMS API tekshirilmoqda...</b>"
     )
 
     try:
 
-        services = await api_services()
+        services = await get_services()
+        balance = await get_api_balance()
 
-        balance = await api_balance()
-
-        if isinstance(
-            services,
-            list
-        ):
-
-            service_count = len(
-                services
+        service_count = (
+            len(services)
+            if isinstance(
+                services,
+                list
             )
-
-        else:
-
-            service_count = 0
+            else 0
+        )
 
         if isinstance(
             balance,
             dict
         ):
 
-            api_balance_value = balance.get(
+            balance_value = balance.get(
                 "balance",
                 "Noma'lum"
             )
 
         else:
 
-            api_balance_value = "Noma'lum"
+            balance_value = "Noma'lum"
 
         await callback.message.edit_text(
             "🟢 <b>SEENSMS API ONLINE</b>\n"
@@ -2122,8 +2181,8 @@ async def adm_api(
             f"⚡ Xizmatlar: "
             f"<b>{service_count}</b>\n"
             f"💰 API balans: "
-            f"<b>{api_balance_value}</b>",
-            reply_markup=admin_back()
+            f"<b>{balance_value}</b>",
+            reply_markup=admin_back_keyboard()
         )
 
     except Exception as error:
@@ -2132,7 +2191,7 @@ async def adm_api(
             "🔴 <b>SEENSMS API OFFLINE</b>\n"
             "━━━━━━━━━━━━━━━━━━━━\n\n"
             f"<code>{str(error)[:500]}</code>",
-            reply_markup=admin_back()
+            reply_markup=admin_back_keyboard()
         )
 
     await callback.answer()
@@ -2145,25 +2204,27 @@ async def adm_api(
 @dp.callback_query(
     F.data == "adm:users"
 )
-async def adm_users(
+async def admin_users(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
-    users, orders, revenue, balances = statistics()
+    users, orders, revenue, balances = (
+        get_statistics()
+    )
 
     await callback.message.edit_text(
         "👥 <b>FOYDALANUVCHILAR</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"👤 Jami: <b>{users}</b>\n"
         f"📦 Buyurtmalar: <b>{orders}</b>\n"
-        f"💳 User balanslari: "
+        f"💳 Umumiy balans: "
         f"<b>{balances:,.2f} so‘m</b>",
-        reply_markup=admin_back()
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
@@ -2176,16 +2237,16 @@ async def adm_users(
 @dp.callback_query(
     F.data == "adm:orders"
 )
-async def adm_orders(
+async def admin_orders(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -2206,19 +2267,16 @@ async def adm_orders(
 
     conn.close()
 
+    text = (
+        "📦 <b>SO‘NGGI BUYURTMALAR</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
     if not rows:
 
-        text = (
-            "📦 <b>BUYURTMALAR</b>\n\n"
-            "Hozircha buyurtmalar yo‘q."
-        )
+        text += "Buyurtmalar hali yo‘q."
 
     else:
-
-        text = (
-            "📦 <b>SO‘NGGI BUYURTMALAR</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
 
         for row in rows:
 
@@ -2230,12 +2288,12 @@ async def adm_orders(
                 f"💰 {row[4]:,.2f}\n"
                 f"📌 {row[5]}\n"
                 f"🕐 {row[6]}\n"
-                "──────────────\n"
+                "────────────\n"
             )
 
     await callback.message.edit_text(
         text[:4000],
-        reply_markup=admin_back()
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
@@ -2248,16 +2306,16 @@ async def adm_orders(
 @dp.callback_query(
     F.data == "adm:logs"
 )
-async def adm_logs(
+async def admin_logs(
     callback: CallbackQuery
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
-    conn = db()
+    conn = get_db()
     cur = conn.cursor()
 
     cur.execute("""
@@ -2277,19 +2335,16 @@ async def adm_logs(
 
     conn.close()
 
+    text = (
+        "📜 <b>BALANS TARIXI</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+    )
+
     if not rows:
 
-        text = (
-            "📜 <b>BALANS TARIXI</b>\n\n"
-            "Hozircha operatsiyalar yo‘q."
-        )
+        text += "Operatsiyalar hali yo‘q."
 
     else:
-
-        text = (
-            "📜 <b>BALANS TARIXI</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
 
         for row in rows:
 
@@ -2305,71 +2360,69 @@ async def adm_logs(
                 f"💳 {row[3]:,.2f} → "
                 f"{row[4]:,.2f}\n"
                 f"🕐 {row[5]}\n"
-                "──────────────\n"
+                "────────────\n"
             )
 
     await callback.message.edit_text(
         text[:4000],
-        reply_markup=admin_back()
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
 
 
 # =========================================================
-# ADMIN BROADCAST
+# BROADCAST
 # =========================================================
 
 @dp.callback_query(
     F.data == "adm:broadcast"
 )
-async def adm_broadcast(
+async def broadcast_start(
     callback: CallbackQuery,
     state: FSMContext
 ):
 
     if not is_admin(
-        callback.from_user
+        callback.from_user.id
     ):
         return
 
     await state.set_state(
-        AdminBroadcastState.message
+        BroadcastState.message
     )
 
     await callback.message.edit_text(
-        "📢 <b>REKLAMA YUBORISH</b>\n"
+        "📢 <b>REKLAMA</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         "Yubormoqchi bo‘lgan xabaringizni "
-        "keyingi xabarda yuboring.\n\n"
-        "⚠️ Xabar bazadagi foydalanuvchilarga "
-        "yuboriladi.",
-        reply_markup=admin_back()
+        "keyingi xabarda yuboring.",
+        reply_markup=admin_back_keyboard()
     )
 
     await callback.answer()
 
 
 @dp.message(
-    AdminBroadcastState.message
+    BroadcastState.message
 )
-async def broadcast(
+async def broadcast_send(
     message: Message,
     state: FSMContext
 ):
 
     if not is_admin(
-        message.from_user
+        message.from_user.id
     ):
         return
 
-    users = get_users()
+    users = get_all_users()
 
     sent = 0
     failed = 0
 
     await message.answer(
-        f"📢 <b>Yuborish boshlandi...</b>\n\n"
+        f"📢 Yuborish boshlandi...\n"
         f"👥 Jami: <b>{len(users)}</b>"
     )
 
@@ -2389,12 +2442,14 @@ async def broadcast(
 
             failed += 1
 
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(
+            0.05
+        )
 
     await state.clear()
 
     await message.answer(
-        "📢 <b>YAKUNLANDI</b>\n"
+        "📢 <b>REKLAMA YAKUNLANDI</b>\n"
         "━━━━━━━━━━━━━━━━━━━━\n\n"
         f"✅ Yuborildi: <b>{sent}</b>\n"
         f"❌ Xato: <b>{failed}</b>",
@@ -2409,9 +2464,14 @@ async def broadcast(
 @dp.callback_query(
     F.data == "adm:home"
 )
-async def adm_home(
+async def admin_home(
     callback: CallbackQuery
 ):
+
+    if not is_admin(
+        callback.from_user.id
+    ):
+        return
 
     await callback.message.delete()
 
@@ -2433,9 +2493,9 @@ async def main():
     init_db()
 
     if not SEENSMS_API_KEY:
+
         logger.warning(
-            "SEENSMS_API_KEY Render Environment "
-            "Variables'da topilmadi."
+            "SEENSMS_API_KEY mavjud emas!"
         )
 
     await bot.delete_webhook(
