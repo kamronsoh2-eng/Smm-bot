@@ -1,14 +1,20 @@
 import asyncio, aiohttp, os
 from telebot.async_telebot import AsyncTeleBot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from flask import Flask
+from threading import Thread
 
-# Tokenlarni tizim o'zgaruvchilaridan xavfsiz o'qish
+# Render port xatosini to'g'rilash uchun kichik veb-server
+app = Flask('')
+@app.route('/')
+def home(): return "Bot faol!"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 API_KEY = os.environ.get("TOPSMM_API_KEY")
 API_URL = "https://topsmm.uz"
-
-if not BOT_TOKEN or not API_KEY:
-    raise ValueError("ERROR: BOT_TOKEN yoki TOPSMM_API_KEY Render paneli (Environment) ichiga kiritilmagan!")
 
 bot = AsyncTeleBot(BOT_TOKEN)
 user_sessions, services_cache = {}, []
@@ -105,4 +111,5 @@ async def inputs(m):
             user_sessions.pop(cid, None)
 
 if __name__ == '__main__':
+    Thread(target=run_web).start()
     asyncio.run(bot.infinity_polling())
