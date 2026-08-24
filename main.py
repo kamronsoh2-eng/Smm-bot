@@ -28,6 +28,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 # =========================================================
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+FORCE_CHANNEL = "@Best1smmuz"
 SEENSMS_API_KEY = os.getenv("SEENSMS_API_KEY")
 
 SEENSMS_API_URL = "https://seensms.uz/api/v1"
