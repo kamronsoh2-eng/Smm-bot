@@ -1,3 +1,4 @@
 aiogram==2.25.1
 aiohttp==3.11.2
 flask==3.0.3
+
